@@ -44,6 +44,13 @@ jobs:
             exit 1
           fi
 
+          EXPECTED_SHA256="a5371d92ebab76c61bb24db4cc3b6a1fb5114a8127821f166ec888a86f5e2d30"
+          ACTUAL_SHA256="$(sha256sum "$ARCHIVE" | cut -d ' ' -f1)"
+          if [[ "$ACTUAL_SHA256" != "$EXPECTED_SHA256" ]]; then
+            echo "::error::Source archive checksum mismatch. Re-upload the original three parts."
+            exit 1
+          fi
+
           unzip -q "$ARCHIVE" -d "$WORK_DIR"
           if [[ -f "$WORK_DIR/dimasik/build.gradle" ]]; then
             PROJECT_DIR="$WORK_DIR/dimasik"
