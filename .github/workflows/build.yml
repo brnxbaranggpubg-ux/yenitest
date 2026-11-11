@@ -62,16 +62,88 @@ jobs:
           fi
           echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
 
+      - name: Apply compatibility and safety fixes
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - "$PROJECT_DIR" <<'PY'
+          from pathlib import Path
+          import re
+          import sys
+
+          root = Path(sys.argv[1])
+
+          build = root / "build.gradle"
+          text = build.read_text(encoding="utf-8")
+          text = text.replace(
+              'implementation "net.fabricmc:fabric-loader:',
+              'modImplementation "net.fabricmc:fabric-loader:',
+              1,
+          )
+          text = text.replace(
+              'implementation "net.fabricmc.fabric-api:fabric-api:',
+              'modImplementation "net.fabricmc.fabric-api:fabric-api:',
+              1,
+          )
+          for dep in (
+              "    include 'org.luaj:luaj-jse:3.0.1'",
+              "    include 'com.microsoft.onnxruntime:onnxruntime:1.20.0'",
+          ):
+              if dep not in text:
+                  marker = "    implementation 'com.microsoft.onnxruntime:onnxruntime:1.20.0'"
+                  if marker not in text:
+                      raise SystemExit("Could not find ONNX dependency marker in build.gradle")
+                  text = text.replace(marker, marker + "\n" + dep, 1)
+          text = text.replace('from("LICENSE")', 'from("LICENSE.txt")', 1)
+          build.write_text(text, encoding="utf-8")
+
+          props = root / "gradle.properties"
+          lines = props.read_text(encoding="utf-8").splitlines()
+          lines = [line for line in lines if not line.strip().startswith("yarn_mappings=")]
+          props.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+          client = root / "src/main/java/dev/dimasik/client/DimasikClient.java"
+          text = client.read_text(encoding="utf-8")
+          old_ip = 'private static final String f_32389 = "217.60.245.54";'
+          if old_ip in text:
+              text = text.replace(old_ip, 'private static final String f_32389 = "127.0.0.1";', 1)
+          client.write_text(text, encoding="utf-8")
+
+          redirect = root / "src/main/java/dev/dimasik/client/system/Class_7dCjHrlQt8mkhswh.java"
+          text = redirect.read_text(encoding="utf-8")
+          text, n1 = re.subn(
+              r'public static String m_1741\(String var0\) \{.*?\n   \}',
+              'public static String m_1741(String var0) {\n      return var0;\n   }',
+              text, count=1, flags=re.S,
+          )
+          text, n2 = re.subn(
+              r'public static ServerAddress m_1743\(ServerAddress var0\) \{.*?\n   \}',
+              'public static ServerAddress m_1743(ServerAddress var0) {\n      return var0;\n   }',
+              text, count=1, flags=re.S,
+          )
+          if n1 != 1 or n2 != 1:
+              raise SystemExit("Could not safely disable the embedded server-address redirects")
+          redirect.write_text(text, encoding="utf-8")
+
+          media = root / "src/main/java/dev/dimasik/client/system/Class_JG8EQkxMGm8yNbUr.java"
+          text = media.read_text(encoding="utf-8")
+          text = text.replace('private static final String f_9349 = "Hidden";',
+                              'private static final String f_9349 = "Normal";', 1)
+          text = text.replace('private static final String f_9351 = "Bypass";',
+                              'private static final String f_9351 = "RemoteSigned";', 1)
+          media.write_text(text, encoding="utf-8")
+          PY
+
       - name: Set up Java 25
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "25"
 
-      - name: Set up Gradle 9.9.1
+      - name: Set up Gradle 9.7.1
         uses: gradle/actions/setup-gradle@v4
         with:
-          gradle-version: "9.9.1"
+          gradle-version: "9.7.1"
 
       - name: Build mod
         shell: bash
@@ -80,7 +152,9 @@ jobs:
           cd "$PROJECT_DIR"
           java -version
           gradle --version
-          gradle --no-daemon --stacktrace build
+          gradle --no-daemon --stacktrace clean build
+          find build/libs -maxdepth 1 -name '*.jar' -type f -print
+          test -n "$(find build/libs -maxdepth 1 -name '*.jar' -type f ! -name '*-sources.jar' -print -quit)"
 
       - name: Upload JAR
         uses: actions/upload-artifact@v4
@@ -98,7 +172,8 @@ jobs:
         with:
           name: Dimasik-build-diagnostics
           path: |
-            ${{ runner.temp }}/dimasik-source/**/build/reports/**
-            ${{ runner.temp }}/dimasik-source/**/build/tmp/**
+            ${{ env.PROJECT_DIR }}/build/reports/**
+            ${{ env.PROJECT_DIR }}/build/tmp/**
+            ${{ runner.temp }}/dimasik-source/**
           if-no-files-found: ignore
           retention-days: 7
