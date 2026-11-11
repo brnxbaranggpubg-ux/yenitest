@@ -80,61 +80,40 @@ jobs:
           echo "project_dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
           echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
 
-      - name: Apply compatibility and safety fixes
+      - name: Validate project and apply minimal safety changes
         shell: bash
         run: |
           set -euo pipefail
           python - "$PROJECT_DIR" <<'PY'
           from pathlib import Path
-          import re
           import sys
 
           root = Path(sys.argv[1])
-
-          build = root / "build.gradle"
-          text = build.read_text(encoding="utf-8")
-          for dep in (
-              "    include 'org.luaj:luaj-jse:3.0.1'",
-              "    include 'com.microsoft.onnxruntime:onnxruntime:1.20.0'",
-          ):
-              if dep not in text:
-                  marker = "    implementation 'com.microsoft.onnxruntime:onnxruntime:1.20.0'"
-                  if marker not in text:
-                      raise SystemExit("Required ONNX dependency declaration was not found; build.gradle needs manual review.")
-                  text = text.replace(marker, marker + "\\n" + dep, 1)
-          build.write_text(text, encoding="utf-8")
+          required = [
+              root / "build.gradle",
+              root / "gradle.properties",
+              root / "src/main/resources/fabric.mod.json",
+          ]
+          missing = [str(path.relative_to(root)) for path in required if not path.is_file()]
+          if missing:
+              raise SystemExit("Required project files missing: " + ", ".join(missing))
 
           client = root / "src/main/java/dev/dimasik/client/DimasikClient.java"
-          if client.exists():
-              text = client.read_text(encoding="utf-8")
-              text = text.replace('private static final String f_32389 = "217.60.245.54";',
-                                  'private static final String f_32389 = "127.0.0.1";', 1)
-              client.write_text(text, encoding="utf-8")
-
-          redirect = root / "src/main/java/dev/dimasik/client/system/Class_7dCjHrlQt8mkhswh.java"
-          if redirect.exists():
-              text = redirect.read_text(encoding="utf-8")
-              text, n1 = re.subn(
-                  r'public static String m_1741\\(String var0\\) \\{.*?\\n   \\}',
-                  'public static String m_1741(String var0) {\\n      return var0;\\n   }',
-                  text, count=1, flags=re.S,
-              )
-              text, n2 = re.subn(
-                  r'public static ServerAddress m_1743\\(ServerAddress var0\\) \\{.*?\\n   \\}',
-                  'public static ServerAddress m_1743(ServerAddress var0) {\\n      return var0;\\n   }',
-                  text, count=1, flags=re.S,
-              )
-              if n1 == 1 and n2 == 1:
-                  redirect.write_text(text, encoding="utf-8")
+          if client.is_file():
+              content = client.read_text(encoding="utf-8")
+              content = content.replace("217.60.245.54", "127.0.0.1")
+              client.write_text(content, encoding="utf-8")
 
           media = root / "src/main/java/dev/dimasik/client/system/Class_JG8EQkxMGm8yNbUr.java"
-          if media.exists():
-              text = media.read_text(encoding="utf-8")
-              text = text.replace('private static final String f_9349 = "Hidden";',
-                                  'private static final String f_9349 = "Normal";', 1)
-              text = text.replace('private static final String f_9351 = "Bypass";',
-                                  'private static final String f_9351 = "RemoteSigned";', 1)
-              media.write_text(text, encoding="utf-8")
+          if media.is_file():
+              content = media.read_text(encoding="utf-8")
+              content = content.replace('private static final String f_9349 = "Hidden";',
+                                        'private static final String f_9349 = "Normal";')
+              content = content.replace('private static final String f_9351 = "Bypass";',
+                                        'private static final String f_9351 = "RemoteSigned";')
+              media.write_text(content, encoding="utf-8")
+
+          print("Project layout verified. Minimal safety replacements applied only when the original strings existed.")
           PY
 
       - name: Set up Java 25
