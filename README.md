@@ -2,18 +2,24 @@
 
 This repository contains the GitHub Actions build setup for the Dimasik project.
 
-## Upload source
+## Source upload
 
-The original source archive is larger than GitHub's normal browser upload limit for a single file, so it is split into three pieces. Upload all three files to the repository root in one commit:
+Upload all three original archive parts to the repository root in one commit:
 
 - `dimasik.zip.part-00`
 - `dimasik.zip.part-01`
 - `dimasik.zip.part-02`
 
-After the upload, the **Build Dimasik JAR** workflow starts automatically. It joins the pieces, extracts the archive, installs Java 25 and Gradle 9.9.1, and runs the Gradle build.
+The workflow verifies the assembled archive SHA-256 before extracting it. A mismatch stops the build.
 
-## Download the result
+## Build
 
-Open the repository's **Actions** tab, select the latest **Build Dimasik JAR** run, and download the `Dimasik-JAR` artifact if the workflow succeeds.
+The workflow uses Java 25 and Gradle 9.7.1 for the Minecraft 26.2 target. It also adjusts Fabric dependency scopes and nests the LuaJ and ONNX Runtime libraries into the mod JAR.
 
-The source archive has not been committed yet; only the build workflow and this README are present until the three archive parts are uploaded.
+For safety, the build patch disables the built-in connection to the third-party IRC host, removes hard-coded Minecraft server-address redirects, and changes the Windows media helper from hidden PowerShell with ExecutionPolicy Bypass to a visible process using RemoteSigned. These changes can disable features that depended on those external services or redirects.
+
+## Download
+
+After the source parts are committed, open **Actions** and select the latest **Build Dimasik JAR** run. Download the `Dimasik-JAR` artifact only when the workflow succeeds.
+
+The original source archive is not yet in this repository, so no build run or JAR artifact exists yet.
