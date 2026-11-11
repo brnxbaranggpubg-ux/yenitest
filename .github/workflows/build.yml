@@ -1,0 +1,97 @@
+name: Build Dimasik JAR
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "dimasik.zip"
+      - "dimasik.zip.part-*"
+      - "dimasik/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dimasik-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Reassemble and extract source archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          WORK_DIR="$RUNNER_TEMP/dimasik-source"
+          mkdir -p "$WORK_DIR"
+
+          if [[ -f "$GITHUB_WORKSPACE/dimasik.zip" ]]; then
+            ARCHIVE="$GITHUB_WORKSPACE/dimasik.zip"
+          elif [[ -f "$GITHUB_WORKSPACE/dimasik.zip.part-00" && -f "$GITHUB_WORKSPACE/dimasik.zip.part-01" && -f "$GITHUB_WORKSPACE/dimasik.zip.part-02" ]]; then
+            ARCHIVE="$RUNNER_TEMP/dimasik.zip"
+            cat "$GITHUB_WORKSPACE/dimasik.zip.part-00" "$GITHUB_WORKSPACE/dimasik.zip.part-01" "$GITHUB_WORKSPACE/dimasik.zip.part-02" > "$ARCHIVE"
+          elif [[ -f "$GITHUB_WORKSPACE/dimasik/build.gradle" ]]; then
+            echo "PROJECT_DIR=$GITHUB_WORKSPACE/dimasik" >> "$GITHUB_ENV"
+            exit 0
+          else
+            echo "::error::Source archive missing. Upload dimasik.zip or all three dimasik.zip.part-00/01/02 files to the repository root."
+            exit 1
+          fi
+
+          unzip -q "$ARCHIVE" -d "$WORK_DIR"
+          if [[ -f "$WORK_DIR/dimasik/build.gradle" ]]; then
+            PROJECT_DIR="$WORK_DIR/dimasik"
+          elif [[ -f "$WORK_DIR/build.gradle" ]]; then
+            PROJECT_DIR="$WORK_DIR"
+          else
+            echo "::error::Could not find build.gradle in the extracted archive."
+            exit 1
+          fi
+          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+
+      - name: Set up Java 25
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "25"
+
+      - name: Set up Gradle 9.9.1
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "9.9.1"
+
+      - name: Build mod
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$PROJECT_DIR"
+          java -version
+          gradle --version
+          gradle --no-daemon --stacktrace build
+
+      - name: Upload JAR
+        uses: actions/upload-artifact@v4
+        with:
+          name: Dimasik-JAR
+          path: |
+            ${{ env.PROJECT_DIR }}/build/libs/*.jar
+            !${{ env.PROJECT_DIR }}/build/libs/*-sources.jar
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload build diagnostics on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Dimasik-build-diagnostics
+          path: |
+            ${{ runner.temp }}/dimasik-source/**/build/reports/**
+            ${{ runner.temp }}/dimasik-source/**/build/tmp/**
+          if-no-files-found: ignore
+          retention-days: 7
