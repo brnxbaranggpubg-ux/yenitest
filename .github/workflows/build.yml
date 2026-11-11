@@ -4,6 +4,7 @@ on:
   push:
     branches: [main]
     paths:
+      - "dimasik-source.zip"
       - "dimasik.zip"
       - "dimasik.zip.part-*"
       - "dimasik/**"
@@ -24,42 +25,59 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Reassemble and extract source archive
+      - name: Locate, verify, and extract source
+        id: source
         shell: bash
         run: |
           set -euo pipefail
           WORK_DIR="$RUNNER_TEMP/dimasik-source"
           mkdir -p "$WORK_DIR"
 
-          if [[ -f "$GITHUB_WORKSPACE/dimasik.zip" ]]; then
+          echo "Repository root contains:"
+          find "$GITHUB_WORKSPACE" -maxdepth 1 -type f -printf '%f (%s bytes)\n' | sort
+
+          ARCHIVE=""
+          if [[ -f "$GITHUB_WORKSPACE/dimasik-source.zip" ]]; then
+            ARCHIVE="$GITHUB_WORKSPACE/dimasik-source.zip"
+          elif [[ -f "$GITHUB_WORKSPACE/dimasik.zip" ]]; then
             ARCHIVE="$GITHUB_WORKSPACE/dimasik.zip"
           elif [[ -f "$GITHUB_WORKSPACE/dimasik.zip.part-00" && -f "$GITHUB_WORKSPACE/dimasik.zip.part-01" && -f "$GITHUB_WORKSPACE/dimasik.zip.part-02" ]]; then
             ARCHIVE="$RUNNER_TEMP/dimasik.zip"
-            cat "$GITHUB_WORKSPACE/dimasik.zip.part-00" "$GITHUB_WORKSPACE/dimasik.zip.part-01" "$GITHUB_WORKSPACE/dimasik.zip.part-02" > "$ARCHIVE"
+            cat "$GITHUB_WORKSPACE/dimasik.zip.part-00" \
+                "$GITHUB_WORKSPACE/dimasik.zip.part-01" \
+                "$GITHUB_WORKSPACE/dimasik.zip.part-02" > "$ARCHIVE"
           elif [[ -f "$GITHUB_WORKSPACE/dimasik/build.gradle" ]]; then
+            echo "project_dir=$GITHUB_WORKSPACE/dimasik" >> "$GITHUB_OUTPUT"
             echo "PROJECT_DIR=$GITHUB_WORKSPACE/dimasik" >> "$GITHUB_ENV"
             exit 0
+          elif [[ -f "$GITHUB_WORKSPACE/build.gradle" ]]; then
+            echo "project_dir=$GITHUB_WORKSPACE" >> "$GITHUB_OUTPUT"
+            echo "PROJECT_DIR=$GITHUB_WORKSPACE" >> "$GITHUB_ENV"
+            exit 0
           else
-            echo "::error::Source archive missing. Upload dimasik.zip or all three dimasik.zip.part-00/01/02 files to the repository root."
+            echo "::error title=Source files missing::The repository does not contain the source archive. Upload dimasik.zip.part-00, dimasik.zip.part-01, and dimasik.zip.part-02 to the repository root, then commit all three files."
             exit 1
           fi
 
           EXPECTED_SHA256="a5371d92ebab76c61bb24db4cc3b6a1fb5114a8127821f166ec888a86f5e2d30"
           ACTUAL_SHA256="$(sha256sum "$ARCHIVE" | cut -d ' ' -f1)"
+          echo "Archive SHA-256: $ACTUAL_SHA256"
           if [[ "$ACTUAL_SHA256" != "$EXPECTED_SHA256" ]]; then
-            echo "::error::Source archive checksum mismatch. Re-upload the original three parts."
+            echo "::error title=Archive checksum mismatch::The uploaded source parts do not match the original archive. Re-upload all three parts from the same set."
             exit 1
           fi
 
+          unzip -tq "$ARCHIVE"
           unzip -q "$ARCHIVE" -d "$WORK_DIR"
-          if [[ -f "$WORK_DIR/dimasik/build.gradle" ]]; then
-            PROJECT_DIR="$WORK_DIR/dimasik"
-          elif [[ -f "$WORK_DIR/build.gradle" ]]; then
-            PROJECT_DIR="$WORK_DIR"
-          else
-            echo "::error::Could not find build.gradle in the extracted archive."
+
+          PROJECT_BUILD_FILE="$(find "$WORK_DIR" -type f -name build.gradle -not -path '*/.gradle/*' -print -quit)"
+          if [[ -z "$PROJECT_BUILD_FILE" ]]; then
+            echo "::error title=Gradle project not found::The archive passed its checksum, but no build.gradle was found after extraction."
             exit 1
           fi
+          PROJECT_DIR="$(dirname "$PROJECT_BUILD_FILE")"
+          echo "Found Gradle project at: $PROJECT_DIR"
+          echo "project_dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
           echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
 
       - name: Apply compatibility and safety fixes
@@ -75,16 +93,6 @@ jobs:
 
           build = root / "build.gradle"
           text = build.read_text(encoding="utf-8")
-          text = text.replace(
-              'implementation "net.fabricmc:fabric-loader:',
-              'modImplementation "net.fabricmc:fabric-loader:',
-              1,
-          )
-          text = text.replace(
-              'implementation "net.fabricmc.fabric-api:fabric-api:',
-              'modImplementation "net.fabricmc.fabric-api:fabric-api:',
-              1,
-          )
           for dep in (
               "    include 'org.luaj:luaj-jse:3.0.1'",
               "    include 'com.microsoft.onnxruntime:onnxruntime:1.20.0'",
@@ -92,46 +100,41 @@ jobs:
               if dep not in text:
                   marker = "    implementation 'com.microsoft.onnxruntime:onnxruntime:1.20.0'"
                   if marker not in text:
-                      raise SystemExit("Could not find ONNX dependency marker in build.gradle")
-                  text = text.replace(marker, marker + "\n" + dep, 1)
-          text = text.replace('from("LICENSE")', 'from("LICENSE.txt")', 1)
+                      raise SystemExit("Required ONNX dependency declaration was not found; build.gradle needs manual review.")
+                  text = text.replace(marker, marker + "\\n" + dep, 1)
           build.write_text(text, encoding="utf-8")
 
-          props = root / "gradle.properties"
-          lines = props.read_text(encoding="utf-8").splitlines()
-          lines = [line for line in lines if not line.strip().startswith("yarn_mappings=")]
-          props.write_text("\n".join(lines) + "\n", encoding="utf-8")
-
           client = root / "src/main/java/dev/dimasik/client/DimasikClient.java"
-          text = client.read_text(encoding="utf-8")
-          old_ip = 'private static final String f_32389 = "217.60.245.54";'
-          if old_ip in text:
-              text = text.replace(old_ip, 'private static final String f_32389 = "127.0.0.1";', 1)
-          client.write_text(text, encoding="utf-8")
+          if client.exists():
+              text = client.read_text(encoding="utf-8")
+              text = text.replace('private static final String f_32389 = "217.60.245.54";',
+                                  'private static final String f_32389 = "127.0.0.1";', 1)
+              client.write_text(text, encoding="utf-8")
 
           redirect = root / "src/main/java/dev/dimasik/client/system/Class_7dCjHrlQt8mkhswh.java"
-          text = redirect.read_text(encoding="utf-8")
-          text, n1 = re.subn(
-              r'public static String m_1741\(String var0\) \{.*?\n   \}',
-              'public static String m_1741(String var0) {\n      return var0;\n   }',
-              text, count=1, flags=re.S,
-          )
-          text, n2 = re.subn(
-              r'public static ServerAddress m_1743\(ServerAddress var0\) \{.*?\n   \}',
-              'public static ServerAddress m_1743(ServerAddress var0) {\n      return var0;\n   }',
-              text, count=1, flags=re.S,
-          )
-          if n1 != 1 or n2 != 1:
-              raise SystemExit("Could not safely disable the embedded server-address redirects")
-          redirect.write_text(text, encoding="utf-8")
+          if redirect.exists():
+              text = redirect.read_text(encoding="utf-8")
+              text, n1 = re.subn(
+                  r'public static String m_1741\\(String var0\\) \\{.*?\\n   \\}',
+                  'public static String m_1741(String var0) {\\n      return var0;\\n   }',
+                  text, count=1, flags=re.S,
+              )
+              text, n2 = re.subn(
+                  r'public static ServerAddress m_1743\\(ServerAddress var0\\) \\{.*?\\n   \\}',
+                  'public static ServerAddress m_1743(ServerAddress var0) {\\n      return var0;\\n   }',
+                  text, count=1, flags=re.S,
+              )
+              if n1 == 1 and n2 == 1:
+                  redirect.write_text(text, encoding="utf-8")
 
           media = root / "src/main/java/dev/dimasik/client/system/Class_JG8EQkxMGm8yNbUr.java"
-          text = media.read_text(encoding="utf-8")
-          text = text.replace('private static final String f_9349 = "Hidden";',
-                              'private static final String f_9349 = "Normal";', 1)
-          text = text.replace('private static final String f_9351 = "Bypass";',
-                              'private static final String f_9351 = "RemoteSigned";', 1)
-          media.write_text(text, encoding="utf-8")
+          if media.exists():
+              text = media.read_text(encoding="utf-8")
+              text = text.replace('private static final String f_9349 = "Hidden";',
+                                  'private static final String f_9349 = "Normal";', 1)
+              text = text.replace('private static final String f_9351 = "Bypass";',
+                                  'private static final String f_9351 = "RemoteSigned";', 1)
+              media.write_text(text, encoding="utf-8")
           PY
 
       - name: Set up Java 25
@@ -140,10 +143,10 @@ jobs:
           distribution: temurin
           java-version: "25"
 
-      - name: Set up Gradle 9.7.1
+      - name: Set up Gradle 9.9.1
         uses: gradle/actions/setup-gradle@v4
         with:
-          gradle-version: "9.7.1"
+          gradle-version: "9.9.1"
 
       - name: Build mod
         shell: bash
@@ -161,8 +164,8 @@ jobs:
         with:
           name: Dimasik-JAR
           path: |
-            ${{ env.PROJECT_DIR }}/build/libs/*.jar
-            !${{ env.PROJECT_DIR }}/build/libs/*-sources.jar
+            ${{ steps.source.outputs.project_dir }}/build/libs/*.jar
+            !${{ steps.source.outputs.project_dir }}/build/libs/*-sources.jar
           if-no-files-found: error
           retention-days: 14
 
@@ -172,8 +175,8 @@ jobs:
         with:
           name: Dimasik-build-diagnostics
           path: |
-            ${{ env.PROJECT_DIR }}/build/reports/**
-            ${{ env.PROJECT_DIR }}/build/tmp/**
             ${{ runner.temp }}/dimasik-source/**
+            ${{ github.workspace }}/dimasik/build/reports/**
+            ${{ github.workspace }}/dimasik/build/tmp/**
           if-no-files-found: ignore
           retention-days: 7
